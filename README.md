@@ -6,10 +6,9 @@ A minimal yet production-ready double-entry ledger backend that records financia
 
 Watch the complete project demonstration:
 
-<video width="800" controls>
-  <source src="./20250921-2133-12.1744975.mp4" type="video/mp4">
-  Your browser does not support the video tag. <a href="./20250921-2133-12.1744975.mp4">Download the video</a>
-</video>
+[![Demo Video](https://img.shields.io/badge/▶️_Watch_Demo-YouTube-red?style=for-the-badge&logo=youtube)](https://youtu.be/4pcZYvp2dPA)
+
+**🔗 Demo Link**: https://youtu.be/4pcZYvp2dPA
 
 > **Video Overview**: This demo showcases the complete ledger system functionality including account creation, journal entries, balance inquiries, and trial balance reporting. The video demonstrates both the API endpoints and the underlying double-entry bookkeeping principles in action.
 
