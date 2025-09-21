@@ -1,0 +1,883 @@
+openapi: 3.0.3
+info:
+  title: Double-Entry Ledger API
+  description: |
+    A minimal double-entry ledger backend that records financial events as journal entries and produces accurate account balances over time.
+    
+    ## Features
+    - Double-entry bookkeeping with validation
+    - Immutable journal entries with reversal support
+    - Historical balance queries (time travel)
+    - Idempotent operations with request deduplication
+    - Integer-based money handling (no floating-point errors)
+    - API key authentication
+    
+    ## Business Rules
+    - Every journal entry must balance (total debits = total credits)
+    - All amounts stored as integer minor units (cents/paise)
+    - Entries are immutable once posted (use reversals for corrections)
+    - Account types have normal balances (Assets/Expenses debit-normal, Liabilities/Equity/Revenue credit-normal)
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@ledger-system.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+  - url: https://api.ledger-system.com
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Returns the health status of the API and database connection
+      security: []
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  timestamp:
+                    type: string
+                    format: date-time
+                  environment:
+                    type: string
+                  database:
+                    type: string
+                    enum: [connected]
+              example:
+                status: ok
+                timestamp: "2025-01-01T12:00:00.000Z"
+                environment: development
+                database: connected
+
+  /:
+    get:
+      summary: API documentation
+      description: Returns API information and available endpoints
+      security: []
+      tags:
+        - System
+      responses:
+        '200':
+          description: API documentation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiDocumentation'
+
+  /accounts:
+    post:
+      summary: Create a new account
+      description: Creates a new account in the chart of accounts
+      tags:
+        - Accounts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+            example:
+              code: "1001"
+              name: "Cash"
+              type: "Asset"
+      responses:
+        '201':
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+
+    get:
+      summary: List accounts
+      description: Retrieves all accounts, optionally filtered by account type
+      tags:
+        - Accounts
+      parameters:
+        - name: type
+          in: query
+          description: Filter accounts by type
+          required: false
+          schema:
+            $ref: '#/components/schemas/AccountType'
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{code}:
+    get:
+      summary: Get account details
+      description: Retrieves details for a specific account by code
+      tags:
+        - Accounts
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: Account code
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9]{1,20}$'
+          example: "1001"
+      responses:
+        '200':
+          description: Account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /accounts/{code}/balance:
+    get:
+      summary: Get account balance
+      description: Retrieves the current or historical balance for an account
+      tags:
+        - Balances
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: Account code
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9]{1,20}$'
+          example: "1001"
+        - name: as_of
+          in: query
+          description: Calculate balance as of this date (YYYY-MM-DD)
+          required: false
+          schema:
+            type: string
+            format: date
+          example: "2025-01-31"
+      responses:
+        '200':
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /journal-entries:
+    post:
+      summary: Create a journal entry
+      description: |
+        Creates a new journal entry with double-entry validation.
+        Supports idempotency via the Idempotency-Key header.
+      tags:
+        - Journal Entries
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Unique key for idempotent operations
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+          example: "d9e5e2ab-1"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJournalEntryRequest'
+            example:
+              date: "2025-01-15"
+              narration: "Seed capital"
+              lines:
+                - account_code: "1001"
+                  debit: 100000
+                - account_code: "3001"
+                  credit: 100000
+      responses:
+        '201':
+          description: Journal entry created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JournalEntryResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+
+    get:
+      summary: List journal entries
+      description: Retrieves journal entries with optional pagination
+      tags:
+        - Journal Entries
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of entries to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          description: Number of entries to skip
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: List of journal entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JournalEntryListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /journal-entries/{id}:
+    get:
+      summary: Get journal entry
+      description: Retrieves a specific journal entry by ID
+      tags:
+        - Journal Entries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Journal entry UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: Journal entry details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JournalEntryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /journal-entries/{id}/reverse:
+    post:
+      summary: Create reversal entry
+      description: Creates a reversal entry that negates the original entry
+      tags:
+        - Journal Entries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Original journal entry UUID to reverse
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          description: Unique key for idempotent operations
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReversalRequest'
+            example:
+              date: "2025-01-16"
+              narration: "Reversal of seed capital"
+      responses:
+        '201':
+          description: Reversal entry created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JournalEntryResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reports/trial-balance:
+    get:
+      summary: Generate trial balance report
+      description: |
+        Generates a trial balance report for a specified date range.
+        Verifies that total debits equal total credits.
+      tags:
+        - Reports
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Start date for the report (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2025-01-01"
+        - name: to
+          in: query
+          required: true
+          description: End date for the report (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2025-01-31"
+      responses:
+        '200':
+          description: Trial balance report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrialBalanceResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /reports/balance-summary:
+    get:
+      summary: Get balance summary by account type
+      description: Returns aggregate balances grouped by account type
+      tags:
+        - Reports
+      parameters:
+        - name: as_of
+          in: query
+          description: Calculate balances as of this date (YYYY-MM-DD)
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Balance summary by account type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceSummaryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  schemas:
+    AccountType:
+      type: string
+      enum: [Asset, Liability, Equity, Revenue, Expense]
+      description: |
+        Account types with their normal balances:
+        - Asset: Debit normal (increases with debits)
+        - Liability: Credit normal (increases with credits)
+        - Equity: Credit normal (increases with credits)
+        - Revenue: Credit normal (increases with credits)
+        - Expense: Debit normal (increases with debits)
+
+    Account:
+      type: object
+      required: [id, code, name, type, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique account identifier
+        code:
+          type: string
+          pattern: '^[a-zA-Z0-9]{1,20}$'
+          description: Unique alphanumeric account code
+          example: "1001"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Human-readable account name
+          example: "Cash"
+        type:
+          $ref: '#/components/schemas/AccountType'
+        created_at:
+          type: string
+          format: date-time
+          description: Account creation timestamp
+
+    CreateAccountRequest:
+      type: object
+      required: [code, name, type]
+      properties:
+        code:
+          type: string
+          pattern: '^[a-zA-Z0-9]{1,20}$'
+          description: Unique alphanumeric account code
+          example: "1001"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Human-readable account name
+          example: "Cash"
+        type:
+          $ref: '#/components/schemas/AccountType'
+
+    JournalLine:
+      type: object
+      required: [account_code]
+      properties:
+        account_code:
+          type: string
+          pattern: '^[a-zA-Z0-9]{1,20}$'
+          description: Account code for this line item
+          example: "1001"
+        debit:
+          type: integer
+          minimum: 0
+          description: Debit amount in minor units (cents/paise)
+          example: 100000
+        credit:
+          type: integer
+          minimum: 0
+          description: Credit amount in minor units (cents/paise)
+          example: 100000
+      description: |
+        Journal entry line item. Exactly one of debit or credit must be greater than 0.
+        Both cannot be 0, and both cannot be greater than 0.
+
+    CreateJournalEntryRequest:
+      type: object
+      required: [date, narration, lines]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Entry date (cannot be in the future)
+          example: "2025-01-15"
+        narration:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Description of the transaction
+          example: "Seed capital"
+        lines:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/JournalLine'
+          description: Array of journal entry lines (minimum 2 required)
+        reverses_entry_id:
+          type: string
+          format: uuid
+          description: Optional reference to entry being reversed
+      description: |
+        Journal entry creation request. Must satisfy double-entry rules:
+        - Total debits must equal total credits
+        - Total amount must be greater than 0
+        - Each account can appear only once per entry
+
+    CreateReversalRequest:
+      type: object
+      required: [date, narration]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Reversal entry date
+          example: "2025-01-16"
+        narration:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Description of the reversal
+          example: "Reversal of seed capital"
+
+    JournalEntry:
+      type: object
+      required: [id, date, narration, posted_at, lines]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique entry identifier
+        date:
+          type: string
+          format: date
+          description: Entry date
+        narration:
+          type: string
+          description: Transaction description
+        posted_at:
+          type: string
+          format: date-time
+          description: Timestamp when entry was posted
+        reverses_entry_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Reference to reversed entry (if this is a reversal)
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/JournalLineDetail'
+          description: Array of journal entry lines
+
+    JournalLineDetail:
+      type: object
+      required: [id, account_code, debit, credit, line_index]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique line identifier
+        account_code:
+          type: string
+          description: Account code for this line
+        debit:
+          type: integer
+          description: Debit amount in minor units (0 if credit line)
+        credit:
+          type: integer
+          description: Credit amount in minor units (0 if debit line)
+        line_index:
+          type: integer
+          description: Line order within the entry
+
+    Balance:
+      type: object
+      required: [account_code, account_name, account_type, debits, credits, balance]
+      properties:
+        account_code:
+          type: string
+          description: Account code
+        account_name:
+          type: string
+          description: Account name
+        account_type:
+          $ref: '#/components/schemas/AccountType'
+        debits:
+          type: integer
+          description: Total debit amount in minor units
+        credits:
+          type: integer
+          description: Total credit amount in minor units
+        balance:
+          type: integer
+          description: |
+            Account balance in minor units.
+            For credit-normal accounts (Liability/Equity/Revenue), 
+            this will be negative when the account has a credit balance.
+
+    TrialBalance:
+      type: object
+      required: [from, to, accounts, totals, is_balanced]
+      properties:
+        from:
+          type: string
+          format: date
+          description: Report start date
+        to:
+          type: string
+          format: date
+          description: Report end date
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrialBalanceAccount'
+          description: All accounts with their balances
+        totals:
+          type: object
+          required: [debits, credits]
+          properties:
+            debits:
+              type: integer
+              description: Total of all debit amounts
+            credits:
+              type: integer
+              description: Total of all credit amounts
+        is_balanced:
+          type: boolean
+          description: Whether total debits equal total credits
+
+    TrialBalanceAccount:
+      type: object
+      required: [code, name, type, debits, credits, balance]
+      properties:
+        code:
+          type: string
+          description: Account code
+        name:
+          type: string
+          description: Account name
+        type:
+          $ref: '#/components/schemas/AccountType'
+        debits:
+          type: integer
+          description: Total debit amount for the period
+        credits:
+          type: integer
+          description: Total credit amount for the period
+        balance:
+          type: integer
+          description: Account balance
+
+    BalanceSummary:
+      type: object
+      required: [assets, liabilities, equity, revenue, expenses, net_income]
+      properties:
+        assets:
+          type: integer
+          description: Total asset balances
+        liabilities:
+          type: integer
+          description: Total liability balances
+        equity:
+          type: integer
+          description: Total equity balances
+        revenue:
+          type: integer
+          description: Total revenue balances
+        expenses:
+          type: integer
+          description: Total expense balances
+        net_income:
+          type: integer
+          description: Net income (revenue - expenses)
+        as_of:
+          type: string
+          description: Balance calculation date or "current"
+
+    ApiDocumentation:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "Double-Entry Ledger API"
+        version:
+          type: string
+          example: "1.0.0"
+        description:
+          type: string
+        documentation:
+          type: object
+        endpoints:
+          type: object
+        health:
+          type: string
+
+    ApiResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Human-readable response message
+
+    AccountResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Account'
+
+    AccountListResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Account'
+            count:
+              type: integer
+              description: Number of accounts returned
+
+    JournalEntryResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/JournalEntry'
+            idempotency_key:
+              type: string
+              description: Idempotency key used (if any)
+
+    JournalEntryListResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/JournalEntry'
+            count:
+              type: integer
+            pagination:
+              type: object
+              properties:
+                limit:
+                  type: integer
+                offset:
+                  type: integer
+
+    BalanceResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: '#/components/schemas/Balance'
+                - type: object
+                  properties:
+                    as_of:
+                      type: string
+                      description: Balance date or "current"
+
+    TrialBalanceResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialBalance'
+
+    BalanceSummaryResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/BalanceSummary'
+
+    ErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          required: [error, code]
+          properties:
+            success:
+              type: boolean
+              enum: [false]
+            error:
+              type: string
+              description: Error category
+            code:
+              type: string
+              description: Machine-readable error code
+
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Validation Error"
+            message: "Account code must contain only alphanumeric characters"
+            code: "VALIDATION_ERROR"
+
+    Unauthorized:
+      description: Authentication required or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Unauthorized"
+            message: "API key is required. Please provide X-API-Key header."
+            code: "UNAUTHORIZED"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Not Found"
+            message: "Account with code '9999' not found"
+            code: "NOT_FOUND"
+
+    ConflictError:
+      description: Resource conflict (e.g., duplicate code, idempotency violation)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Conflict Error"
+            message: "Account with code '1001' already exists"
+            code: "CONFLICT_ERROR"
+
+tags:
+  - name: System
+    description: System health and documentation endpoints
+  - name: Accounts
+    description: Chart of accounts management
+  - name: Journal Entries
+    description: Double-entry journal entry operations
+  - name: Balances
+    description: Account balance inquiries
+  - name: Reports
+    description: Financial reporting endpoints
